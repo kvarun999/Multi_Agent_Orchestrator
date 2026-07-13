@@ -1,0 +1,81 @@
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: agent_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d agent_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://admin:password@db:5432/agent_db
+      - SYNC_DATABASE_URL=postgresql+psycopg2://admin:password@db:5432/agent_db
+      - REDIS_URL=redis://redis:6379/0
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
+      - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./backend
+    command: celery -A app.worker.celery_app worker --loglevel=info --pool=solo
+    volumes:
+      - ./backend:/app
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://admin:password@db:5432/agent_db
+      - SYNC_DATABASE_URL=postgresql+psycopg2://admin:password@db:5432/agent_db
+      - REDIS_URL=redis://redis:6379/0
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
+      - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  ui:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000
+      - WATCHPACK_POLLING=true
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
